@@ -1,9 +1,9 @@
 # Big Picture Tasks for Project Completion #
 
-#### 1. Replicate Zaremba Network ####
-#### Status: In Progress... ####
-##### Subtasks: #####
+#### TASK 1: Replicate Zaremba Network  ||  Status: In Progress...####
 
-[x] Obtain PTB train, val, text data for Zaremba 2014 RNN-LSTM network
+##### \tSubtasks: #####
 
-[ ] Upload and train Zaremba network 
+\t[x] Obtain PTB train, val, text data for Zaremba 2014 RNN-LSTM network
+
+\t[ ] Upload and train Zaremba network 
