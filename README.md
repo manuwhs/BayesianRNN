@@ -36,3 +36,6 @@ https://gist.github.com/windweller/500ddc19d0c3cf1eb03cf73cc6b88fe3
 Link with Zaremba's RNN Implementation:
 https://www.tensorflow.org/tutorials/recurrent
 
+Garin paper about Dropout as Bayesian Approximation and Gaussian Processes
+https://arxiv.org/abs/1506.02142
+
