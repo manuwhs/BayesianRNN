@@ -440,6 +440,12 @@ def get_config():
 
 
 def main(_):
+#  print ("Hello")
+#  FLAGS.data_path = "../data";
+#  print (FLAGS.model)
+#  FLAGS.model["model"] = "small";
+#  FLAGS.num_gpus = 0;
+  
   if not FLAGS.data_path:
     raise ValueError("Must set --data_path to PTB data directory")
   gpus = [
