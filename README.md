@@ -39,3 +39,8 @@ https://www.tensorflow.org/tutorials/recurrent
 Garin paper about Dropout as Bayesian Approximation and Gaussian Processes
 https://arxiv.org/abs/1506.02142
 
+On the reparameterization trick
+https://stats.stackexchange.com/questions/199605/how-does-the-reparameterization-trick-for-vaes-work-and-why-is-it-important
+
+Another BRNN Implementation using approximation of prior mixture og Gaussians
+https://github.com/DeNeutoy/bayesian-rnn
