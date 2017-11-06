@@ -27,6 +27,10 @@ import tensorflow as tf
 
 Py3 = sys.version_info[0] == 3
 
+
+"""
+Description: 
+"""
 def _read_words(filename):
   with tf.gfile.GFile(filename, "r") as f:
     if Py3:
