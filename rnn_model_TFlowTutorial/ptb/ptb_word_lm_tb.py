@@ -446,7 +446,7 @@ def get_config():
 def main(_):
     
   #Manually set flags here
-  flags.FLAGS.data_path = "simple-examples/data/"
+  flags.FLAGS.data_path = "../../data/"
   flags.FLAGS.save_path = "tensorboard/"
         
   if not FLAGS.data_path:
