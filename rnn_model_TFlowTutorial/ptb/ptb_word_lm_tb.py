@@ -77,7 +77,7 @@ flags = tf.flags
 logging = tf.logging
 
 flags.DEFINE_string(
-    "model", "small",
+    "model", "test",
     "A type of model. Possible options are: small, medium, large.")
 flags.DEFINE_string("data_path", None,
                     "Where the training/test data is stored.")
@@ -132,6 +132,8 @@ class PTBModel(object):
           "embedding", [vocab_size, size], dtype=data_type())
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
 
+    input_print = tf.Print(inputs, [inputs])
+        
     if is_training and config.keep_prob < 1:
       inputs = tf.nn.dropout(inputs, config.keep_prob)
 
@@ -225,8 +227,10 @@ class PTBModel(object):
     cell = tf.contrib.rnn.MultiRNNCell(
         [cell for _ in range(config.num_layers)], state_is_tuple=True)
 
+
     self._initial_state = cell.zero_state(config.batch_size, data_type())
     state = self._initial_state
+    
     # Simplified version of tensorflow_models/tutorials/rnn/rnn.py's rnn().
     # This builds an unrolled LSTM for tutorial purposes only.
     # In general, use the rnn() or state_saving_rnn() from rnn.py.
@@ -376,13 +380,13 @@ class TestConfig(object):
   learning_rate = 1.0
   max_grad_norm = 1
   num_layers = 1
-  num_steps = 2
+  num_steps = 5
   hidden_size = 2
   max_epoch = 1
   max_max_epoch = 1
   keep_prob = 1.0
   lr_decay = 0.5
-  batch_size = 20
+  batch_size = 10
   vocab_size = 10000
   rnn_mode = BLOCK
 
