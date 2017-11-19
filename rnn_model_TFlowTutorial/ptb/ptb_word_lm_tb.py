@@ -138,8 +138,6 @@ class PTBModel(object):
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
       print("Inputs (output of embedding_lookup): ", inputs.size)
 
-    input_print = tf.Print(inputs, [inputs])
-        
     if is_training and config.keep_prob < 1:
       inputs = tf.nn.dropout(inputs, config.keep_prob)
 
@@ -182,11 +180,18 @@ class PTBModel(object):
       return
 
     self._lr = tf.Variable(0.0, trainable=False)
+<<<<<<< HEAD
     tvars = tf.trainable_variables() # This convenience function calls all variables with trainable=True into a list
     grads, _ = tf.clip_by_global_norm( # All of our clipped gradients are now stored in grads as a list in order of tvars
                                       tf.gradients(self._cost, tvars), # This will construct symbolic derivatives:
                                                                        # dc_dw1, dc_dw2, ... dc_dwN (N = num_weights, num_tvars)
                                       config.max_grad_norm) # avoiding exploding gradients by clipping them
+=======
+    tvars = tf.trainable_variables()
+
+    grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
+                                      config.max_grad_norm)
+>>>>>>> 58a2be2c4ad65326438c3430c45ebfbe61ccae3b
     optimizer = tf.train.GradientDescentOptimizer(self._lr)
     self._train_op = optimizer.apply_gradients( # Returns an an Operation that applies the specified gradients
         zip(grads, tvars),
@@ -195,6 +200,7 @@ class PTBModel(object):
     self._new_lr = tf.placeholder(
         tf.float32, shape=[], name="new_learning_rate")
     self._lr_update = tf.assign(self._lr, self._new_lr)
+
 
   def _build_rnn_graph(self, inputs, config, is_training):
     if config.rnn_mode == CUDNN:
@@ -268,7 +274,10 @@ class PTBModel(object):
         if time_step > 0: tf.get_variable_scope().reuse_variables()
         (cell_output, state) = cell(inputs[:, time_step, :], state)
         outputs.append(cell_output)
-    output = tf.reshape(tf.concat(outputs, 1), [-1, config.hidden_size])
+    
+    output = tf.concat(outputs,1) 
+    output = tf.reshape(output, [-1, config.hidden_size])
+    
     return output, state
 
   def assign_lr(self, session, lr_value):
