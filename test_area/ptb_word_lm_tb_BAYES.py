@@ -1,17 +1,3 @@
-# Copyright 2015 The TensorFlow Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
 
 """Example / benchmark for building a PTB LSTM model.
 
@@ -138,8 +124,9 @@ class PTBModel(object):
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
       print("Inputs (output of embedding_lookup): ", inputs.size)
 
-    if is_training and config.keep_prob < 1:
-      inputs = tf.nn.dropout(inputs, config.keep_prob)
+    # We comment 2 lines below because we don't implement DropOut; we implement Bayes by Backprop thorugh Time instead  
+    #if is_training and config.keep_prob < 1:
+    #  inputs = tf.nn.dropout(inputs, config.keep_prob)
 
     output, state = self._build_rnn_graph(inputs, config, is_training)
     print("Output: ", output.size)
@@ -227,8 +214,18 @@ class PTBModel(object):
     return outputs, (tf.contrib.rnn.LSTMStateTuple(h=h, c=c),)
 
   def _get_lstm_cell(self, config, is_training):
+    """ 
     if config.rnn_mode == BASIC:
       return tf.contrib.rnn.BasicLSTMCell(
+          config.hidden_size, forget_bias=0.0, state_is_tuple=True,
+          reuse=not is_training)
+    """
+    # TO DO: 1) Imprt BayesianLSTMCell from Peter's test script
+    #        2) Move weight sampling outside of BayesianLSTMCell class
+    #        3) Combine the LL Loss (function/gradients) above with KL Loss
+    #           from Optimization script  
+    if config.rnn_mode == BASIC:
+      return BayesianLSTMCell(
           config.hidden_size, forget_bias=0.0, state_is_tuple=True,
           reuse=not is_training)
     if config.rnn_mode == BLOCK:
@@ -242,9 +239,9 @@ class PTBModel(object):
     # initialized to 1 but the hyperparameters of the model would need to be
     # different than reported in the paper.
     cell = self._get_lstm_cell(config, is_training)
-    if is_training and config.keep_prob < 1:
-      cell = tf.contrib.rnn.DropoutWrapper(
-          cell, output_keep_prob=config.keep_prob)
+    #if is_training and config.keep_prob < 1:
+    #  cell = tf.contrib.rnn.DropoutWrapper(
+    #      cell, output_keep_prob=config.keep_prob)
 
     cell = tf.contrib.rnn.MultiRNNCell(
         [cell for _ in range(config.num_layers)], state_is_tuple=True)
