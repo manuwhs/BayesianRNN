@@ -112,6 +112,11 @@ class PTBInput(object):
     self.epoch_size = ((len(data) // batch_size) - 1) // num_steps
     self.input_data, self.targets = reader.ptb_producer(
         data, batch_size, num_steps, name=name)
+    print("Batch Size: ", batch_size)
+    print("Input Data: ", self.input_data.size)
+    print("Target Data: ", self.targets.size)
+
+
 
 
 class PTBModel(object):
@@ -131,6 +136,7 @@ class PTBModel(object):
       embedding = tf.get_variable(
           "embedding", [vocab_size, size], dtype=data_type())
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
+      print("Inputs (output of embedding_lookup): ", inputs.size)
 
     input_print = tf.Print(inputs, [inputs])
         
@@ -138,35 +144,51 @@ class PTBModel(object):
       inputs = tf.nn.dropout(inputs, config.keep_prob)
 
     output, state = self._build_rnn_graph(inputs, config, is_training)
+    print("Output: ", output.size)
+    print("State: ", state.size)
 
     softmax_w = tf.get_variable(
         "softmax_w", [size, vocab_size], dtype=data_type())
     softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
     logits = tf.nn.xw_plus_b(output, softmax_w, softmax_b)
+    print("softmax_w: ", softmax_w.size)
+    print("softmax_b: ", softmax_b.size)
+    print("logits: ", logits.shape)
      # Reshape logits to be a 3-D tensor for sequence loss
+     # The logits correspond to the prediction across all classes at each timestep.
     logits = tf.reshape(logits, [self.batch_size, self.num_steps, vocab_size])
+    print("logits reshaped: ", logits.shape)
 
     # Use the contrib sequence loss and average over the batches
     loss = tf.contrib.seq2seq.sequence_loss(
         logits,
-        input_.targets,
+        input_.targets, # this should be of shape: [batch_size, num_steps]
+        # these ones are the weigths to the predictions: it's weighting each prediction in the sequence equally
         tf.ones([self.batch_size, self.num_steps], dtype=data_type()),
+        # The combination of False, True below results in a loss of shape: [num_steps] (since it averages over batch)
+        # This means that loss vector has elements that coresspond to the loss at each time step
+        # These are later summed up with tf.reduce_sum(loss) below into one single scalar loss value  
         average_across_timesteps=False,
         average_across_batch=True)
 
     # Update the cost
-    self._cost = tf.reduce_sum(loss)
+    self._cost = tf.reduce_sum(loss) # this should now be a scalar. NOTE: if we skip this step and pass a loss
+                                     # vector shape [num_steps] to tf.gradients() below, then we can obtain the
+                                     # likelihood loss gradient (wrt to the weights) at each time step. I.e., we
+                                     # will obtain 35 (num_steps) gradients
     self._final_state = state
 
     if not is_training:
       return
 
     self._lr = tf.Variable(0.0, trainable=False)
-    tvars = tf.trainable_variables()
-    grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),
-                                      config.max_grad_norm)
+    tvars = tf.trainable_variables() # This convenience function calls all variables with trainable=True into a list
+    grads, _ = tf.clip_by_global_norm( # All of our clipped gradients are now stored in grads as a list in order of tvars
+                                      tf.gradients(self._cost, tvars), # This will construct symbolic derivatives:
+                                                                       # dc_dw1, dc_dw2, ... dc_dwN (N = num_weights, num_tvars)
+                                      config.max_grad_norm) # avoiding exploding gradients by clipping them
     optimizer = tf.train.GradientDescentOptimizer(self._lr)
-    self._train_op = optimizer.apply_gradients(
+    self._train_op = optimizer.apply_gradients( # Returns an an Operation that applies the specified gradients
         zip(grads, tvars),
         global_step=tf.contrib.framework.get_or_create_global_step())
 
