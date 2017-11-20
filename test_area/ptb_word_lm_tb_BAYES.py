@@ -88,6 +88,108 @@ BLOCK = "block"
 def data_type():
   return tf.float16 if FLAGS.use_fp16 else tf.float32
 
+def sample_random_normal(name, mean, std, shape):
+    
+    with tf.variable_scope("sample_random_normal"):
+    
+        #Inverse softplus (positive std)
+        standard_dev = tf.log(tf.exp(std) - 1.0) * tf.ones(shape)
+        
+        mean = tf.get_variable(name + "_mean", initializer=mean, dtype=tf.float32)
+        standard_deviation = tf.get_variable(name + "std", initializer=std, dtype=tf.float32)
+        #Revert back to std
+        standard_deviation = tf.nn.softplus(standard_deviation)
+    
+        #Sample standard normal
+        epsilon = tf.random_normal(mean=0, stddev=1, name="epsilon", shape=shape, dtype=tf.float32)
+      
+        random_var = mean + standard_deviation*epsilon
+    
+    return random_var
+
+class BayesianLSTMCell(BasicLSTMCell):
+    def __init__(self, num_units, Weights, Biases **kwargs):
+        
+        #self.mean = mean
+        #self.std = std
+        self.num_units = num_units
+        self.Weights = Weights
+        self.Biases = Biases
+        
+        #From BasicLSTMCell
+        super(BayesianLSTMCell, self).__init__(num_units, **kwargs)
+    
+    
+    """
+        A note on the shape for the sampling of weights and biases:
+        
+        The number of weights we want to sample is determined by the hidden state
+        from the previous cell, the input data, and of course the number of gates
+        in a single cell.
+        
+        Assume that num_units = 10:
+        There's 4 gates in an LSTM cell. Hence when we say we want num_units = 10
+        then the LSTM cell actually consists of 4*num_units = 40 hidden units.
+        
+        The hidden state from the previous gate will have the shape h=[num_units]=[10]
+        The input data is embedded and in the original model embedding_size = num_units
+        This can of course be changed if wanted. So input data will have the shape
+        inputs=[embedding_size]=[num_units]=[10]
+        
+        Input data and the hidden state from the previous cell is concatenated before passed
+        to any gate. Thus the input to each gate will be x = [embedding_size + num_units] = [20]
+        that is, a 20 long vector.
+        
+        So the total amount of weights needed will be 4*num_units*(embedding_size+num_units) = 160
+        The total amount of biases is just the length of the input vector x to the gates, so the
+        total number of biases should be embedding_size + num_units = 20
+    """
+    
+    
+    #Class call function
+    def __call__(self, inputs, state):
+        with tf.variable_scope("BayesLSTMCell"):
+            
+            #State is a tuple with the cell and hidden state vectors from
+            #the previous BayesianLSTMCell
+            cell, hidden = state
+            
+            #Vector concatenation of previous hidden state and embedded inputs
+            concat_inputs_hidden = tf.concat([inputs, hidden], 1)
+            
+            
+            """
+                gate_inputs is basically the calculation Wx + b of ALL gates.
+                Take e.g. num_units = 2. Thus total number of hidden_units = 8.
+                The input vector x in this case is a 2 long vector, as is the hidden
+                state vector. So dimensions are W = 4x8, x = 4 and b = 8.
+                Then we can do Wx + b and get an 8 long vector which can be passed
+                through the 4 gates and their respective activation functions.
+            """
+            gate_inputs =  tf.nn.bias_add(tf.matmul(concat_inputs_hidden, Weights), Biases)
+
+            #Split data up for the 4 gates
+            #i = input_gate, j = new_input, f = forget_gate, o = output_gate
+            i, j, f, o = tf.split(gate_inputs, axis = 1, num_or_size_splits = 4)
+
+            """
+                Calculate new cell and new hidden states. Calculations are as in Zaremba et al 2015:
+                
+                new_cell = cell*\sigma(f + bias) + \sigma(i)*\sigma(j)
+                new_hidden = \tanh(new_cell)*\sigma(o)
+                
+                See the LSTM graph here: http://colah.github.io/posts/2015-08-Understanding-LSTMs/
+                
+            """
+            new_cell = (cell * tf.sigmoid(f + self._forget_bias) + tf.sigmoid(i)*self._activation(j))
+            new_hidden = self._activation(new_cell) * tf.sigmoid(o)
+            
+            #Create tuple of the new state
+            new_state = LSTMStateTuple(new_cell, new_hidden)
+
+            return new_hidden, new_state
+
+
 
 class PTBInput(object):
   """The input data."""
@@ -128,7 +230,7 @@ class PTBModel(object):
     #if is_training and config.keep_prob < 1:
     #  inputs = tf.nn.dropout(inputs, config.keep_prob)
 
-    output, state = self._build_rnn_graph(inputs, config, is_training)
+    output, state = self._build_rnn_graph_lstm(inputs, config, is_training)
     print("Output: ", output.size)
     print("State: ", state.size)
 
@@ -183,65 +285,35 @@ class PTBModel(object):
     self._lr_update = tf.assign(self._lr, self._new_lr)
 
 
-  def _build_rnn_graph(self, inputs, config, is_training):
-    if config.rnn_mode == CUDNN:
-      return self._build_rnn_graph_cudnn(inputs, config, is_training)
-    else:
-      return self._build_rnn_graph_lstm(inputs, config, is_training)
-
-  def _build_rnn_graph_cudnn(self, inputs, config, is_training):
-    """Build the inference graph using CUDNN cell."""
-    inputs = tf.transpose(inputs, [1, 0, 2])
-    self._cell = tf.contrib.cudnn_rnn.CudnnLSTM(
-        num_layers=config.num_layers,
-        num_units=config.hidden_size,
-        input_size=config.hidden_size,
-        dropout=1 - config.keep_prob if is_training else 0)
-    params_size_t = self._cell.params_size()
-    self._rnn_params = tf.get_variable(
-        "lstm_params",
-        initializer=tf.random_uniform(
-            [params_size_t], -config.init_scale, config.init_scale),
-        validate_shape=False)
-    c = tf.zeros([config.num_layers, self.batch_size, config.hidden_size],
-                 tf.float32)
-    h = tf.zeros([config.num_layers, self.batch_size, config.hidden_size],
-                 tf.float32)
-    self._initial_state = (tf.contrib.rnn.LSTMStateTuple(h=h, c=c),)
-    outputs, h, c = self._cell(inputs, h, c, self._rnn_params, is_training)
-    outputs = tf.transpose(outputs, [1, 0, 2])
-    outputs = tf.reshape(outputs, [-1, config.hidden_size])
-    return outputs, (tf.contrib.rnn.LSTMStateTuple(h=h, c=c),)
-
-  def _get_lstm_cell(self, config, is_training):
-    """ 
-    if config.rnn_mode == BASIC:
-      return tf.contrib.rnn.BasicLSTMCell(
-          config.hidden_size, forget_bias=0.0, state_is_tuple=True,
-          reuse=not is_training)
-    """
-    # TO DO: 1) Imprt BayesianLSTMCell from Peter's test script
-    #        2) Move weight sampling outside of BayesianLSTMCell class
-    #        3) Combine the LL Loss (function/gradients) above with KL Loss
-    #           from Optimization script  
-    if config.rnn_mode == BASIC:
-      return BayesianLSTMCell(
-          config.hidden_size, forget_bias=0.0, state_is_tuple=True,
-          reuse=not is_training)
-    if config.rnn_mode == BLOCK:
-      return tf.contrib.rnn.LSTMBlockCell(
-          config.hidden_size, forget_bias=0.0)
-    raise ValueError("rnn_mode %s not supported" % config.rnn_mode)
+  #Sample weights
+  def sample_weights(self):
+      with tf.variable_scope("CellWeights"):
+          self.Weights = sample_random_normal("WeightMatrix",
+                                              self.mean,
+                                              self.std,
+                                              shape = [2*size,4*size]) #[2*self.num_units,4*self.num_units])
+          return self.Weights
+  
+  #Sample biases
+  def sample_biases(self):
+      with tf.variable_scope("CellBiases"):
+          self.Biases = sample_random_normal("BiasVector",
+                                             self.mean,
+                                             self.std,
+                                             shape = [4*size]) #[4*self.num_units])
+          return self.Biases
 
   def _build_rnn_graph_lstm(self, inputs, config, is_training):
     """Build the inference graph using canonical LSTM cells."""
     # Slightly better results can be obtained with forget gate biases
     # initialized to 1 but the hyperparameters of the model would need to be
     # different than reported in the paper.
-    cell = self._get_lstm_cell(config, is_training)
-    #if is_training and config.keep_prob < 1:
-    #  cell = tf.contrib.rnn.DropoutWrapper(
-    #      cell, output_keep_prob=config.keep_prob)
+
+    Weights = self.sample_weights()
+    Biases  = self.sample_biases()
+
+    cell = BayesianLSTMCell(config.hidden_size, Weights, Biases) #config, is_training)
+    
 
     cell = tf.contrib.rnn.MultiRNNCell(
         [cell for _ in range(config.num_layers)], state_is_tuple=True)
@@ -250,15 +322,6 @@ class PTBModel(object):
     self._initial_state = cell.zero_state(config.batch_size, data_type())
     state = self._initial_state
     
-    # Simplified version of tensorflow_models/tutorials/rnn/rnn.py's rnn().
-    # This builds an unrolled LSTM for tutorial purposes only.
-    # In general, use the rnn() or state_saving_rnn() from rnn.py.
-    #
-    # The alternative version of the code below is:
-    #
-    # inputs = tf.unstack(inputs, num=num_steps, axis=1)
-    # outputs, state = tf.contrib.rnn.static_rnn(cell, inputs,
-    #                            initial_state=self._initial_state)
     outputs = []
     with tf.variable_scope("RNN"):
       for time_step in range(self.num_steps):
