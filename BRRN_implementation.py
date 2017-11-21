@@ -270,12 +270,6 @@ class LanguageModel(object):
                     (cell_output, state) = cell(inputs[:, time_step, :], state)
                     outputs.append(cell_output)
             outputs = tf.reshape(tf.concat(1, outputs), [-1, flags.hidden_dim])
-        else:
-            with tf.variable_scope("RNN"):
-                outputs, state = tf.nn.dynamic_rnn(cell, inputs, sequence_length=self._len,
-                                                   initial_state=self._initial_state, dtype=tf.float32,
-                                                   time_major=False)
-            outputs = tf.reshape(outputs, [-1, flags.hidden_dim])
 
         softmax_w, softmax_w_mu, softmax_w_std = get_random_normal_variable("softmax_w", 0., prior,
                                                                         [flags.hidden_dim, vocab_size], dtype=tf.float32)
@@ -317,8 +311,10 @@ class LanguageModel(object):
         shapes = [tvar.get_shape() for tvar in tvars]
         log_info("# params: %d" % np.sum([np.prod(s) for s in shapes]))
 
+        total_cost = tf.add(self.loss, self.kl_loss)
+
         # careful at this part
-        grads = tf.gradients(self.loss + self.kl_loss, tvars)  # + FLAGS.norm_scale * self.ixh
+        grads = tf.gradients(total_cost, tvars)  # + FLAGS.norm_scale * self.ixh
         if flags.clip_norm is not None:
             grads, grads_norm = tf.clip_by_global_norm(grads, flags.clip_norm)
         else:

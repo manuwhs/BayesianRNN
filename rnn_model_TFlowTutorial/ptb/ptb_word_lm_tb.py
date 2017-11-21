@@ -113,8 +113,8 @@ class PTBInput(object):
     self.input_data, self.targets = reader.ptb_producer(
         data, batch_size, num_steps, name=name)
     print("Batch Size: ", batch_size)
-    print("Input Data: ", self.input_data.size)
-    print("Target Data: ", self.targets.size)
+    #print("Input Data: ", self.input_data.size)
+    #print("Target Data: ", self.targets.size)
 
 
 
@@ -136,26 +136,26 @@ class PTBModel(object):
       embedding = tf.get_variable(
           "embedding", [vocab_size, size], dtype=data_type())
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
-      print("Inputs (output of embedding_lookup): ", inputs.size)
+      #print("Inputs (output of embedding_lookup): ", inputs.size)
 
     if is_training and config.keep_prob < 1:
       inputs = tf.nn.dropout(inputs, config.keep_prob)
 
     output, state = self._build_rnn_graph(inputs, config, is_training)
-    print("Output: ", output.size)
-    print("State: ", state.size)
+    #print("Output: ", output.size)
+    #print("State: ", state.size)
 
     softmax_w = tf.get_variable(
         "softmax_w", [size, vocab_size], dtype=data_type())
     softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
     logits = tf.nn.xw_plus_b(output, softmax_w, softmax_b)
-    print("softmax_w: ", softmax_w.size)
-    print("softmax_b: ", softmax_b.size)
-    print("logits: ", logits.shape)
+    #print("softmax_w: ", softmax_w.size)
+    #print("softmax_b: ", softmax_b.size)
+    #print("logits: ", logits.shape)
      # Reshape logits to be a 3-D tensor for sequence loss
      # The logits correspond to the prediction across all classes at each timestep.
     logits = tf.reshape(logits, [self.batch_size, self.num_steps, vocab_size])
-    print("logits reshaped: ", logits.shape)
+    #print("logits reshaped: ", logits.shape)
 
     # Use the contrib sequence loss and average over the batches
     loss = tf.contrib.seq2seq.sequence_loss(
@@ -178,6 +178,8 @@ class PTBModel(object):
 
     if not is_training:
       return
+
+    print("cost is:",self._cost)
 
     self._lr = tf.Variable(0.0, trainable=False)
     tvars = tf.trainable_variables() # This convenience function calls all variables with trainable=True into a list
@@ -423,18 +425,23 @@ def run_epoch(session, model, eval_op=None, verbose=False):
   iters = 0
   state = session.run(model.initial_state)
 
+  #print("state",state)
+
   fetches = {
       "cost": model.cost,
       "final_state": model.final_state,
   }
   if eval_op is not None:
     fetches["eval_op"] = eval_op
+    
+  #print("fetches",fetches)
 
   for step in range(model.input.epoch_size):
     feed_dict = {}
     for i, (c, h) in enumerate(model.initial_state):
       feed_dict[c] = state[i].c
       feed_dict[h] = state[i].h
+      #print("feed dict",feed_dict)
 
     vals = session.run(fetches, feed_dict)
     cost = vals["cost"]

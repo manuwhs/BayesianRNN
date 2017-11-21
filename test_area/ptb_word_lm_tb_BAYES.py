@@ -51,13 +51,15 @@ import numpy as np
 import tensorflow as tf
 
 import os
-
+import subprocess
 import sys
 
 import reader
 import util
 
 from tensorflow.python.client import device_lib
+
+from tensorflow.contrib.rnn import BasicLSTMCell, LSTMStateTuple, MultiRNNCell
 
 flags = tf.flags
 logging = tf.logging
@@ -85,33 +87,72 @@ CUDNN = "cudnn"
 BLOCK = "block"
 
 
+
 def data_type():
   return tf.float16 if FLAGS.use_fp16 else tf.float32
+
+
 
 def sample_random_normal(name, mean, std, shape):
     
     with tf.variable_scope("sample_random_normal"):
     
+            # it's important to initialize variances with care, otherwise the model takes too long to converge
+        rho_max_init = tf.log(tf.exp(std / 2.0) - 1.0)
+        rho_min_init = tf.log(tf.exp(std / 4.0) - 1.0)
+        std_init = tf.random_uniform_initializer(rho_min_init, rho_max_init)
+        
         #Inverse softplus (positive std)
         standard_dev = tf.log(tf.exp(std) - 1.0) * tf.ones(shape)
+        mean = tf.multiply(mean,tf.ones(shape))
+        
+        
         
         mean = tf.get_variable(name + "_mean", initializer=mean, dtype=tf.float32)
-        standard_deviation = tf.get_variable(name + "std", initializer=std, dtype=tf.float32)
+        standard_deviation = tf.get_variable(name + "_std", initializer=standard_dev, dtype=tf.float32)
         #Revert back to std
         standard_deviation = tf.nn.softplus(standard_deviation)
     
         #Sample standard normal
-        epsilon = tf.random_normal(mean=0, stddev=1, name="epsilon", shape=shape, dtype=tf.float32)
+        epsilon = tf.random_normal(mean=0.0, stddev=1.0, name="epsilon", shape=shape, dtype=tf.float32)
       
-        random_var = mean + standard_deviation*epsilon
+        #random_var = mean + standard_deviation*epsilon
+        random_var = tf.add(mean, tf.multiply(standard_deviation,epsilon))
     
-    return random_var
+    return random_var, mean, standard_deviation
+
+
+
+def get_kl_divergence(prior, posterior):
+    
+
+    """
+      
+        Compute the KL divergence as in Graves et al 2011 formula (13)
+      
+    """
+       
+    prior_mu, prior_sigma = prior
+    post_mu, post_sigma = posterior
+
+    C = 1/(2*prior_sigma**2)
+
+    prior_mu = prior_mu*tf.ones(tf.shape(post_mu))
+    prior_sigma = prior_sigma*tf.ones(tf.shape(post_sigma))
+
+    log_sigmas = tf.subtract(tf.log(prior_sigma), tf.log(post_sigma))
+    mus = tf.square(tf.subtract(post_mu,prior_mu))
+    sigmas = tf.subtract(tf.square(post_sigma),tf.square(prior_sigma))
+
+    kl_divergence = tf.add(log_sigmas,tf.multiply(C,tf.add(mus,sigmas))) 
+
+    return tf.reduce_sum(kl_divergence)
+
+
 
 class BayesianLSTMCell(BasicLSTMCell):
-    def __init__(self, num_units, Weights, Biases **kwargs):
+    def __init__(self, num_units, Weights, Biases, **kwargs):
         
-        #self.mean = mean
-        #self.std = std
         self.num_units = num_units
         self.Weights = Weights
         self.Biases = Biases
@@ -140,7 +181,7 @@ class BayesianLSTMCell(BasicLSTMCell):
         to any gate. Thus the input to each gate will be x = [embedding_size + num_units] = [20]
         that is, a 20 long vector.
         
-        So the total amount of weights needed will be 4*num_units*(embedding_size+num_units) = 160
+        So the total amount of weights needed will be 4*num_units*(embedding_size+num_units) = 80
         The total amount of biases is just the length of the input vector x to the gates, so the
         total number of biases should be embedding_size + num_units = 20
     """
@@ -163,10 +204,11 @@ class BayesianLSTMCell(BasicLSTMCell):
                 Take e.g. num_units = 2. Thus total number of hidden_units = 8.
                 The input vector x in this case is a 2 long vector, as is the hidden
                 state vector. So dimensions are W = 4x8, x = 4 and b = 8.
-                Then we can do Wx + b and get an 8 long vector which can be passed
+                Then we can do Wx + b and get an 8 long vector which can be split
+                into 4 times a 2 long vector which then are passed
                 through the 4 gates and their respective activation functions.
             """
-            gate_inputs =  tf.nn.bias_add(tf.matmul(concat_inputs_hidden, Weights), Biases)
+            gate_inputs =  tf.nn.bias_add(tf.matmul(concat_inputs_hidden, self.Weights), self.Biases)
 
             #Split data up for the 4 gates
             #i = input_gate, j = new_input, f = forget_gate, o = output_gate
@@ -190,7 +232,6 @@ class BayesianLSTMCell(BasicLSTMCell):
             return new_hidden, new_state
 
 
-
 class PTBInput(object):
   """The input data."""
 
@@ -200,11 +241,6 @@ class PTBInput(object):
     self.epoch_size = ((len(data) // batch_size) - 1) // num_steps
     self.input_data, self.targets = reader.ptb_producer(
         data, batch_size, num_steps, name=name)
-    print("Batch Size: ", batch_size)
-    print("Input Data: ", self.input_data.size)
-    print("Target Data: ", self.targets.size)
-
-
 
 
 class PTBModel(object):
@@ -217,52 +253,129 @@ class PTBModel(object):
     self._cell = None
     self.batch_size = input_.batch_size
     self.num_steps = input_.num_steps
+    self.init_scale = config.init_scale
+    self.mean_prior = config.mean_prior
     size = config.hidden_size
     vocab_size = config.vocab_size
+
 
     with tf.device("/cpu:0"):
       embedding = tf.get_variable(
           "embedding", [vocab_size, size], dtype=data_type())
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
-      print("Inputs (output of embedding_lookup): ", inputs.size)
+      
+               
+#    cell_test = tf.contrib.rnn.BasicLSTMCell(
+#    config.hidden_size, forget_bias=0.0, state_is_tuple=True,
+#    reuse=not is_training)
+#
+#    cell_test = tf.contrib.rnn.MultiRNNCell([cell_test for _ in range(config.num_layers)], state_is_tuple=True)
+#    
+#    self._initial_state = cell_test.zero_state(config.batch_size, data_type())
+#    state = self._initial_state
+#
+#    outputs = []
+#    with tf.variable_scope("RNN"):
+#        for time_step in range(self.num_steps):
+#            if time_step > 0: tf.get_variable_scope().reuse_variables()
+#            (cell_output, state) = cell_test(inputs[:, time_step, :], state)
+#            outputs.append(cell_output)
+#
+#    output = tf.concat(outputs,1)
+#    output = tf.reshape(output, [-1, config.hidden_size])
 
-    # We comment 2 lines below because we don't implement DropOut; we implement Bayes by Backprop thorugh Time instead  
-    #if is_training and config.keep_prob < 1:
-    #  inputs = tf.nn.dropout(inputs, config.keep_prob)
+    """
+    
+        Total number of weights required for a single mini batch is:
+        
+            For a single LSTM cell: 
+                W = 4*(embedding_size+num_hidden_units)*num_hidden_units
+                b = 4*num_hidden_units
+                
+            For the softmax layer:
+                W = vocab_size*num_hidden_units
+                b = vocab_size
+                
+            So for e.g. 650 hidden units, total amount of weights = 13.270.000!
 
-    output, state = self._build_rnn_graph_lstm(inputs, config, is_training)
-    print("Output: ", output.size)
-    print("State: ", state.size)
+    """
 
-    softmax_w = tf.get_variable(
-        "softmax_w", [size, vocab_size], dtype=data_type())
-    softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
-    logits = tf.nn.xw_plus_b(output, softmax_w, softmax_b)
-    print("softmax_w: ", softmax_w.size)
-    print("softmax_b: ", softmax_b.size)
-    print("logits: ", logits.shape)
+
+
+    with tf.variable_scope("Cell_sampled_weights"):
+               
+        cell0_w, cell0_w_mu , cell0_w_std = \
+            self._sample_weights("L1_sampling",[2*size,4*size])
+    
+        cell0_b, cell0_b_mu, cell0_b_std  = \
+            self._sample_biases("L1_sampling",[4*size])
+    
+        cell1_w, cell1_w_mu , cell1_w_std = \
+            self._sample_weights("L2_sampling",[2*size,4*size])
+    
+        cell1_b, cell1_b_mu, cell1_b_std  = \
+            self._sample_biases("L2_sampling",[4*size])
+
+    if is_training:
+        cell_weights = (cell0_w, cell0_b, cell1_w, cell1_b)
+    else:
+        cell_weights = (cell0_w_mu,cell0_b_mu,cell1_w_mu,cell1_b_mu)
+
+    output, state = self._build_rnn_graph_lstm(inputs, cell_weights, config, is_training)
+
+
+    #softmax_w = tf.get_variable(
+    #    "softmax_w", [size, vocab_size], dtype=data_type())
+    #softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
+    
+    with tf.variable_scope("Softmax_sampled_weights"):
+    
+        softmax_w, softmax_w_mu, softmax_w_std = \
+            self._sample_weights("softmax_sampling",[size, vocab_size])
+    
+        softmax_b, softmax_b_mu, softmax_b_std = \
+            self._sample_biases("softmax_sampling",[vocab_size])
+        
+    if is_training:
+        logits = tf.nn.xw_plus_b(output, softmax_w, softmax_b)
+    else:
+        logits = tf.nn.xw_plus_b(output, softmax_w_mu, softmax_b_mu)
+
      # Reshape logits to be a 3-D tensor for sequence loss
      # The logits correspond to the prediction across all classes at each timestep.
     logits = tf.reshape(logits, [self.batch_size, self.num_steps, vocab_size])
-    print("logits reshaped: ", logits.shape)
 
     # Use the contrib sequence loss and average over the batches
-    loss = tf.contrib.seq2seq.sequence_loss(
-        logits,
-        input_.targets, # this should be of shape: [batch_size, num_steps]
-        # these ones are the weigths to the predictions: it's weighting each prediction in the sequence equally
-        tf.ones([self.batch_size, self.num_steps], dtype=data_type()),
-        # The combination of False, True below results in a loss of shape: [num_steps] (since it averages over batch)
-        # This means that loss vector has elements that coresspond to the loss at each time step
-        # These are later summed up with tf.reduce_sum(loss) below into one single scalar loss value  
-        average_across_timesteps=False,
-        average_across_batch=True)
-
-    # Update the cost
-    self._cost = tf.reduce_sum(loss) # this should now be a scalar. NOTE: if we skip this step and pass a loss
+    with tf.variable_scope("total_loss"):
+        loss = tf.contrib.seq2seq.sequence_loss(
+            logits,
+            input_.targets, # this should be of shape: [batch_size, num_steps]
+            # these ones are the weigths to the predictions: it's weighting each prediction in the sequence equally
+            tf.ones([self.batch_size, self.num_steps], dtype=data_type()),
+            # The combination of False, True below results in a loss of shape: [num_steps] (since it averages over batch)
+            # This means that loss vector has elements that coresspond to the loss at each time step
+            # These are later summed up with tf.reduce_sum(loss) below into one single scalar loss value  
+            average_across_timesteps=False,
+            average_across_batch=True)
+    
+        # Update the cost
+        self._cost = tf.reduce_sum(loss) # this should now be a scalar. NOTE: if we skip this step and pass a loss
                                      # vector shape [num_steps] to tf.gradients() below, then we can obtain the
                                      # likelihood loss gradient (wrt to the weights) at each time step. I.e., we
                                      # will obtain 35 (num_steps) gradients
+    
+        with tf.variable_scope("KL_loss"):
+                                     
+            self.kl_loss = 0.0
+            self.kl_loss += get_kl_divergence(prior=(0.0,1.0),posterior=(cell0_w_mu,cell0_w_std))
+            self.kl_loss += get_kl_divergence((0.0,1.0),(cell0_b_mu,cell0_b_std))
+            self.kl_loss += get_kl_divergence((0.0,1.0),(cell1_w_mu,cell1_w_std))
+            self.kl_loss += get_kl_divergence((0.0,1.0),(cell1_b_mu,cell1_b_std))
+            self.kl_loss += get_kl_divergence((0.0,1.0),(softmax_w_mu,softmax_w_std))
+            self.kl_loss += get_kl_divergence((0.0,1.0),(softmax_b_mu,softmax_b_std))
+            
+        total_cost = self._cost + self.kl_loss
+                                    
     self._final_state = state
 
     if not is_training:
@@ -270,10 +383,11 @@ class PTBModel(object):
 
     self._lr = tf.Variable(0.0, trainable=False)
     tvars = tf.trainable_variables() # This convenience function calls all variables with trainable=True into a list
-    grads, _ = tf.clip_by_global_norm( # All of our clipped gradients are now stored in grads as a list in order of tvars
-                                      tf.gradients(self._cost, tvars), # This will construct symbolic derivatives:
-                                                                       # dc_dw1, dc_dw2, ... dc_dwN (N = num_weights, num_tvars)
-                                      config.max_grad_norm) # avoiding exploding gradients by clipping them
+    grads, _ = tf.clip_by_global_norm(tf.gradients(total_cost, tvars),config.max_grad_norm)
+    # All of our clipped gradients are now stored in grads as a list in order of tvars
+    # This will construct symbolic derivatives:
+    # dc_dw1, dc_dw2, ... dc_dwN (N = num_weights, num_tvars)
+    # avoiding exploding gradients by clipping them
 
     optimizer = tf.train.GradientDescentOptimizer(self._lr)
     self._train_op = optimizer.apply_gradients( # Returns an an Operation that applies the specified gradients
@@ -286,37 +400,47 @@ class PTBModel(object):
 
 
   #Sample weights
-  def sample_weights(self):
-      with tf.variable_scope("CellWeights"):
-          self.Weights = sample_random_normal("WeightMatrix",
-                                              self.mean,
-                                              self.std,
-                                              shape = [2*size,4*size]) #[2*self.num_units,4*self.num_units])
-          return self.Weights
+  def _sample_weights(self, name, shape):
+      with tf.variable_scope("Weights"):
+          self.Weights, self.w_mu, self.w_std = sample_random_normal(name,
+                                              self.mean_prior,
+                                              self.init_scale,
+                                              shape = shape)
+          return self.Weights, self.w_mu, self.w_std
   
   #Sample biases
-  def sample_biases(self):
-      with tf.variable_scope("CellBiases"):
-          self.Biases = sample_random_normal("BiasVector",
-                                             self.mean,
-                                             self.std,
-                                             shape = [4*size]) #[4*self.num_units])
-          return self.Biases
+  def _sample_biases(self, name, shape):
+      with tf.variable_scope("Biases"):
+          self.Biases, self.b_mu, self.b_std = sample_random_normal(name,
+                                             self.mean_prior,
+                                             self.init_scale,
+                                             shape = shape)
+          return self.Biases, self.b_mu, self.b_std
+      
 
-  def _build_rnn_graph_lstm(self, inputs, config, is_training):
+  def _build_rnn_graph_lstm(self, inputs, weights, config, is_training):
+      
     """Build the inference graph using canonical LSTM cells."""
-    # Slightly better results can be obtained with forget gate biases
-    # initialized to 1 but the hyperparameters of the model would need to be
-    # different than reported in the paper.
-
-    Weights = self.sample_weights()
-    Biases  = self.sample_biases()
-
-    cell = BayesianLSTMCell(config.hidden_size, Weights, Biases) #config, is_training)
+       # Slightly better results can be obtained with forget gate biases
+        # initialized to 1 but the hyperparameters of the model would need to be
+        # different than reported in the paper.
+       
+    self.size = config.hidden_size
     
-
-    cell = tf.contrib.rnn.MultiRNNCell(
-        [cell for _ in range(config.num_layers)], state_is_tuple=True)
+    cell0_w, cell0_b, cell1_w, cell1_b = weights
+    
+    cell0 = BayesianLSTMCell(self.size, cell0_w, cell0_b, reuse = not is_training)
+    cell1 = BayesianLSTMCell(self.size, cell1_w, cell1_b, reuse = not is_training)
+    
+    
+    cell = tf.contrib.rnn.MultiRNNCell([cell0, cell1], state_is_tuple=True)
+    
+#    cell = tf.contrib.rnn.BasicLSTMCell(
+#          config.hidden_size, forget_bias=0.0, state_is_tuple=True,
+#          reuse=not is_training)
+#
+#    cell = tf.contrib.rnn.MultiRNNCell(
+#        [cell for _ in range(config.num_layers)], state_is_tuple=True)
 
 
     self._initial_state = cell.zero_state(config.batch_size, data_type())
@@ -329,7 +453,7 @@ class PTBModel(object):
         (cell_output, state) = cell(inputs[:, time_step, :], state)
         outputs.append(cell_output)
     
-    output = tf.concat(outputs,1) 
+    output = tf.concat(outputs,1)
     output = tf.reshape(output, [-1, config.hidden_size])
     
     return output, state
@@ -360,7 +484,7 @@ class PTBModel(object):
       self._new_lr = tf.get_collection_ref("new_lr")[0]
       self._lr_update = tf.get_collection_ref("lr_update")[0]
       rnn_params = tf.get_collection_ref("rnn_params")
-      if self._cell and rnn_params:
+      if self._cell and rnn_params: #This is only used for cudnn graph build
         params_saveable = tf.contrib.cudnn_rnn.RNNParamsSaveable(
             self._cell,
             self._cell.params_to_canonical,
@@ -411,6 +535,7 @@ class PTBModel(object):
 class SmallConfig(object):
   """Small config."""
   init_scale = 0.1
+  mean_prior = 0.0
   learning_rate = 1.0
   max_grad_norm = 5
   num_layers = 2
@@ -428,6 +553,7 @@ class SmallConfig(object):
 class MediumConfig(object):
   """Medium config."""
   init_scale = 0.05
+  mean_prior = 0.0
   learning_rate = 1.0
   max_grad_norm = 5
   num_layers = 2
@@ -445,6 +571,7 @@ class MediumConfig(object):
 class LargeConfig(object):
   """Large config."""
   init_scale = 0.04
+  mean_prior = 0.0
   learning_rate = 1.0
   max_grad_norm = 10
   num_layers = 2
@@ -461,17 +588,18 @@ class LargeConfig(object):
 
 class TestConfig(object):
   """Tiny config, for testing."""
-  init_scale = 0.1
+  init_scale = 0.05
+  mean_prior = 0.0
   learning_rate = 1.0
   max_grad_norm = 1
-  num_layers = 1
+  num_layers = 2
   num_steps = 5
   hidden_size = 2
   max_epoch = 1
   max_max_epoch = 1
   keep_prob = 1.0
   lr_decay = 0.5
-  batch_size = 10
+  batch_size = 20
   vocab_size = 10000
   rnn_mode = BLOCK
 
@@ -535,7 +663,7 @@ def get_config():
 def main(_):
     
   #Manually set flags here
-  flags.FLAGS.data_path = "../../data/"
+  flags.FLAGS.data_path = "../data/"
   flags.FLAGS.save_path = "tensorboard/"
         
   if not FLAGS.data_path:
@@ -583,8 +711,9 @@ def main(_):
                          input_=test_input)
 
     models = {"Train": m, "Valid": mvalid, "Test": mtest}
-    for name, model in models.items():
+    for name, model in models.items(): #contains [("Train",m), ("Valid", mvalid), ("Test", mtest)]
       model.export_ops(name)
+      
     metagraph = tf.train.export_meta_graph()
     if tf.__version__ < "1.1.0" and FLAGS.num_gpus > 1:
       raise ValueError("num_gpus > 1 is not supported for TensorFlow versions "
@@ -596,13 +725,15 @@ def main(_):
 
   with tf.Graph().as_default():
     tf.train.import_meta_graph(metagraph)
-    for model in models.values():
+    
+    for model in models.values(): #Takes the values m, mvalid, mtest
       model.import_ops()
     sv = tf.train.Supervisor(logdir=FLAGS.save_path)
     config_proto = tf.ConfigProto(allow_soft_placement=soft_placement)
     
-    import subprocess
+    
     subprocess.Popen(["tensorboard","--logdir=tensorboard"])
+    
     
     with sv.managed_session(config=config_proto) as session:
       for i in range(config.max_max_epoch):
