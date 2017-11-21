@@ -97,7 +97,8 @@ def sample_random_normal(name, mean, std, shape):
     
     with tf.variable_scope("sample_random_normal"):
     
-            # it's important to initialize variances with care, otherwise the model takes too long to converge
+        # it's important to initialize variances with care, 
+        # otherwise the model takes too long to converge
         rho_max_init = tf.log(tf.exp(std / 2.0) - 1.0)
         rho_min_init = tf.log(tf.exp(std / 4.0) - 1.0)
         std_init = tf.random_uniform_initializer(rho_min_init, rho_max_init)
@@ -366,15 +367,15 @@ class PTBModel(object):
     
         with tf.variable_scope("KL_loss"):
                                      
-            self.kl_loss = 0.0
-            self.kl_loss += get_kl_divergence(prior=(0.0,1.0),posterior=(cell0_w_mu,cell0_w_std))
-            self.kl_loss += get_kl_divergence((0.0,1.0),(cell0_b_mu,cell0_b_std))
-            self.kl_loss += get_kl_divergence((0.0,1.0),(cell1_w_mu,cell1_w_std))
-            self.kl_loss += get_kl_divergence((0.0,1.0),(cell1_b_mu,cell1_b_std))
-            self.kl_loss += get_kl_divergence((0.0,1.0),(softmax_w_mu,softmax_w_std))
-            self.kl_loss += get_kl_divergence((0.0,1.0),(softmax_b_mu,softmax_b_std))
+            self._kl_loss = 0.0
+            self._kl_loss += get_kl_divergence(prior=(0.0,1.0),posterior=(cell0_w_mu,cell0_w_std))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(cell0_b_mu,cell0_b_std))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(cell1_w_mu,cell1_w_std))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(cell1_b_mu,cell1_b_std))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(softmax_w_mu,softmax_w_std))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(softmax_b_mu,softmax_b_std))
             
-        total_cost = self._cost + self.kl_loss
+        self._total_cost = self._cost + self._kl_loss
                                     
     self._final_state = state
 
@@ -383,7 +384,7 @@ class PTBModel(object):
 
     self._lr = tf.Variable(0.0, trainable=False)
     tvars = tf.trainable_variables() # This convenience function calls all variables with trainable=True into a list
-    grads, _ = tf.clip_by_global_norm(tf.gradients(total_cost, tvars),config.max_grad_norm)
+    grads, _ = tf.clip_by_global_norm(tf.gradients(self._total_cost, tvars),config.max_grad_norm)
     # All of our clipped gradients are now stored in grads as a list in order of tvars
     # This will construct symbolic derivatives:
     # dc_dw1, dc_dw2, ... dc_dwN (N = num_weights, num_tvars)
@@ -510,6 +511,14 @@ class PTBModel(object):
   @property
   def cost(self):
     return self._cost
+
+  @property
+  def kl_cost(self):
+    return self._kl_cost
+
+  @property
+  def total_cost(self):
+    return self._total_cost
 
   @property
   def final_state(self):
@@ -694,7 +703,9 @@ def main(_):
       train_input = PTBInput(config=config, data=train_data, name="TrainInput")
       with tf.variable_scope("Model", reuse=None, initializer=initializer):
         m = PTBModel(is_training=True, config=config, input_=train_input)
-      tf.summary.scalar("Training_Loss", m.cost)
+      tf.summary.scalar("Training_Likelihood_Loss", m.cost)
+      tf.summary.scalar("Training_KL_Loss", m.kl_cost)
+      tf.summary.scalar("Training_Total_Loss", m.total_cost)
       tf.summary.scalar("Learning_Rate", m.lr)
 
     with tf.name_scope("Valid"):
