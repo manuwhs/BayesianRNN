@@ -50,9 +50,10 @@ import time
 import numpy as np
 import tensorflow as tf
 
-import os
+#import os
+#import sys
 import subprocess
-import sys
+
 
 import reader
 import util
@@ -65,7 +66,7 @@ flags = tf.flags
 logging = tf.logging
 
 flags.DEFINE_string(
-    "model", "test",
+    "model", "small",
     "A type of model. Possible options are: small, medium, large.")
 flags.DEFINE_string("data_path", None,
                     "Where the training/test data is stored.")
@@ -99,9 +100,9 @@ def sample_random_normal(name, mean, std, shape):
     
         # it's important to initialize variances with care, 
         # otherwise the model takes too long to converge
-        rho_max_init = tf.log(tf.exp(std / 2.0) - 1.0)
-        rho_min_init = tf.log(tf.exp(std / 4.0) - 1.0)
-        std_init = tf.random_uniform_initializer(rho_min_init, rho_max_init)
+    #    rho_max_init = tf.log(tf.exp(std / 2.0) - 1.0)
+    #    rho_min_init = tf.log(tf.exp(std / 4.0) - 1.0)
+    #    std_init = tf.random_uniform_initializer(rho_min_init, rho_max_init)
         
         #Inverse softplus (positive std)
         standard_dev = tf.log(tf.exp(std) - 1.0) * tf.ones(shape)
@@ -120,7 +121,7 @@ def sample_random_normal(name, mean, std, shape):
         #random_var = mean + standard_deviation*epsilon
         random_var = tf.add(mean, tf.multiply(standard_deviation,epsilon))
     
-    return random_var, mean, standard_deviation
+        return random_var, mean, standard_deviation
 
 
 
@@ -130,21 +131,30 @@ def get_kl_divergence(prior, posterior):
     """
       
         Compute the KL divergence as in Graves et al 2011 formula (13)
+        
+        Need to verify if this is the correct calculation for the KL Loss
+        when not considering a mixture of gaussians.
       
     """
        
     prior_mu, prior_sigma = prior
     post_mu, post_sigma = posterior
 
+    #The constant from the expression
     C = 1/(2*prior_sigma**2)
 
+    #Expand prior parameters to match shape of posterior distribution
     prior_mu = prior_mu*tf.ones(tf.shape(post_mu))
     prior_sigma = prior_sigma*tf.ones(tf.shape(post_sigma))
 
+    #Do log(sigma_prior) - log(sigma_post)
     log_sigmas = tf.subtract(tf.log(prior_sigma), tf.log(post_sigma))
+    #Do (mu_post - mu_prior)^2
     mus = tf.square(tf.subtract(post_mu,prior_mu))
+    #Do sigma_post^2 - sigma_prior^2
     sigmas = tf.subtract(tf.square(post_sigma),tf.square(prior_sigma))
 
+    #Add the above terms together
     kl_divergence = tf.add(log_sigmas,tf.multiply(C,tf.add(mus,sigmas))) 
 
     return tf.reduce_sum(kl_divergence)
@@ -266,25 +276,6 @@ class PTBModel(object):
       inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
       
                
-#    cell_test = tf.contrib.rnn.BasicLSTMCell(
-#    config.hidden_size, forget_bias=0.0, state_is_tuple=True,
-#    reuse=not is_training)
-#
-#    cell_test = tf.contrib.rnn.MultiRNNCell([cell_test for _ in range(config.num_layers)], state_is_tuple=True)
-#    
-#    self._initial_state = cell_test.zero_state(config.batch_size, data_type())
-#    state = self._initial_state
-#
-#    outputs = []
-#    with tf.variable_scope("RNN"):
-#        for time_step in range(self.num_steps):
-#            if time_step > 0: tf.get_variable_scope().reuse_variables()
-#            (cell_output, state) = cell_test(inputs[:, time_step, :], state)
-#            outputs.append(cell_output)
-#
-#    output = tf.concat(outputs,1)
-#    output = tf.reshape(output, [-1, config.hidden_size])
-
     """
     
         Total number of weights required for a single mini batch is:
@@ -297,10 +288,16 @@ class PTBModel(object):
                 W = vocab_size*num_hidden_units
                 b = vocab_size
                 
+            Total number = 2*(single LSTM Cell count) + softmax count
             So for e.g. 650 hidden units, total amount of weights = 13.270.000!
 
     """
 
+# JUST FOR TESTING WHAT ENDS UP IN WHICH SCOPE:
+#    with tf.variable_scope("Test_scope"):
+#        test_const = tf.get_variable(name="test_var", shape=[1],dtype=tf.float32)
+#        
+#        inputs = tf.add(test_const,inputs)
 
 
     with tf.variable_scope("Cell_sampled_weights"):
@@ -321,13 +318,14 @@ class PTBModel(object):
         cell_weights = (cell0_w, cell0_b, cell1_w, cell1_b)
     else:
         cell_weights = (cell0_w_mu,cell0_b_mu,cell1_w_mu,cell1_b_mu)
-
+        
     output, state = self._build_rnn_graph_lstm(inputs, cell_weights, config, is_training)
+    
 
+# IF YOU WANT TO SEE ALL THE OPS IN A GIVEN SCOPE DO:
+#    for i in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='Model'):
+#        print(i)
 
-    #softmax_w = tf.get_variable(
-    #    "softmax_w", [size, vocab_size], dtype=data_type())
-    #softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
     
     with tf.variable_scope("Softmax_sampled_weights"):
     
@@ -341,6 +339,7 @@ class PTBModel(object):
         logits = tf.nn.xw_plus_b(output, softmax_w, softmax_b)
     else:
         logits = tf.nn.xw_plus_b(output, softmax_w_mu, softmax_b_mu)
+        
 
      # Reshape logits to be a 3-D tensor for sequence loss
      # The logits correspond to the prediction across all classes at each timestep.
@@ -360,22 +359,44 @@ class PTBModel(object):
             average_across_batch=True)
     
         # Update the cost
-        self._cost = tf.reduce_sum(loss) # this should now be a scalar. NOTE: if we skip this step and pass a loss
+        self._NLL_cost = tf.reduce_sum(loss) # this should now be a scalar. NOTE: if we skip this step and pass a loss
                                      # vector shape [num_steps] to tf.gradients() below, then we can obtain the
                                      # likelihood loss gradient (wrt to the weights) at each time step. I.e., we
                                      # will obtain 35 (num_steps) gradients
     
         with tf.variable_scope("KL_loss"):
-                                     
-            self._kl_loss = 0.0
-            self._kl_loss += get_kl_divergence(prior=(0.0,1.0),posterior=(cell0_w_mu,cell0_w_std))
-            self._kl_loss += get_kl_divergence((0.0,1.0),(cell0_b_mu,cell0_b_std))
-            self._kl_loss += get_kl_divergence((0.0,1.0),(cell1_w_mu,cell1_w_std))
-            self._kl_loss += get_kl_divergence((0.0,1.0),(cell1_b_mu,cell1_b_std))
-            self._kl_loss += get_kl_divergence((0.0,1.0),(softmax_w_mu,softmax_w_std))
-            self._kl_loss += get_kl_divergence((0.0,1.0),(softmax_b_mu,softmax_b_std))
+                                  
+            """
             
-        self._total_cost = self._cost + self._kl_loss
+                The KL loss below is for a single weight. According to Fortunato
+                they only used a single sample from the posterior for estimation.
+                However, the below approach is probably not correct.
+                
+                If we use the entire shape of the weights and biases below, the KL
+                Loss explodes, causing a word perplexity in the order of billions.
+                
+                Ideally, we should fetch the mu and sigma parameters from the
+                posterior distribution and get one sample via e.g. sample_random_normal
+                or another way of sampling
+                
+                But if one sample means a single sample from a multivariate gaussian
+                then we should sample with the appropriate shape.
+                
+                Lastly, note that in the below we've set the prior to a standard normal.
+                This should not be hardcoded.
+            
+            """
+            
+            self._kl_loss = 0.0
+            self._kl_loss += get_kl_divergence(prior=(0.0,1.0),posterior=(cell0_w_mu[0,0],cell0_w_std[0,0]))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(cell0_b_mu[0],cell0_b_std[0]))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(cell1_w_mu[0,0],cell1_w_std[0,0]))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(cell1_b_mu[0],cell1_b_std[0]))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(softmax_w_mu[0,0],softmax_w_std[0,0]))
+            self._kl_loss += get_kl_divergence((0.0,1.0),(softmax_b_mu[0],softmax_b_std[0]))
+
+            
+        self._cost = tf.add(self._NLL_cost, self._kl_loss)
                                     
     self._final_state = state
 
@@ -384,7 +405,7 @@ class PTBModel(object):
 
     self._lr = tf.Variable(0.0, trainable=False)
     tvars = tf.trainable_variables() # This convenience function calls all variables with trainable=True into a list
-    grads, _ = tf.clip_by_global_norm(tf.gradients(self._total_cost, tvars),config.max_grad_norm)
+    grads, _ = tf.clip_by_global_norm(tf.gradients(self._cost, tvars),config.max_grad_norm)
     # All of our clipped gradients are now stored in grads as a list in order of tvars
     # This will construct symbolic derivatives:
     # dc_dw1, dc_dw2, ... dc_dwN (N = num_weights, num_tvars)
@@ -434,7 +455,7 @@ class PTBModel(object):
     cell1 = BayesianLSTMCell(self.size, cell1_w, cell1_b, reuse = not is_training)
     
     
-    cell = tf.contrib.rnn.MultiRNNCell([cell0, cell1], state_is_tuple=True)
+    cell = MultiRNNCell([cell0, cell1], state_is_tuple=True)
     
 #    cell = tf.contrib.rnn.BasicLSTMCell(
 #          config.hidden_size, forget_bias=0.0, state_is_tuple=True,
@@ -468,7 +489,7 @@ class PTBModel(object):
     ops = {util.with_prefix(self._name, "cost"): self._cost}
     if self._is_training:
       ops.update(lr=self._lr, new_lr=self._new_lr, lr_update=self._lr_update)
-      if self._rnn_params:
+      if self._rnn_params: #Only for cudnn graph build
         ops.update(rnn_params=self._rnn_params)
     for name, op in ops.items():
       tf.add_to_collection(name, op)
@@ -514,11 +535,11 @@ class PTBModel(object):
 
   @property
   def kl_cost(self):
-    return self._kl_cost
+    return self._kl_loss
 
   @property
-  def total_cost(self):
-    return self._total_cost
+  def NLL_cost(self):
+    return self._NLL_cost
 
   @property
   def final_state(self):
@@ -620,6 +641,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
   iters = 0
   state = session.run(model.initial_state)
 
+  #fetches is what we want to evaluate.
   fetches = {
       "cost": model.cost,
       "final_state": model.final_state,
@@ -632,6 +654,7 @@ def run_epoch(session, model, eval_op=None, verbose=False):
     for i, (c, h) in enumerate(model.initial_state):
       feed_dict[c] = state[i].c
       feed_dict[h] = state[i].h
+
 
     vals = session.run(fetches, feed_dict)
     cost = vals["cost"]
@@ -703,9 +726,9 @@ def main(_):
       train_input = PTBInput(config=config, data=train_data, name="TrainInput")
       with tf.variable_scope("Model", reuse=None, initializer=initializer):
         m = PTBModel(is_training=True, config=config, input_=train_input)
-      tf.summary.scalar("Training_Likelihood_Loss", m.cost)
+      tf.summary.scalar("Training_Total_Loss", m.cost)
       tf.summary.scalar("Training_KL_Loss", m.kl_cost)
-      tf.summary.scalar("Training_Total_Loss", m.total_cost)
+      tf.summary.scalar("Negative_LL_Loss", m._NLL_cost)
       tf.summary.scalar("Learning_Rate", m.lr)
 
     with tf.name_scope("Valid"):
