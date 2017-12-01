@@ -315,6 +315,10 @@ class PTBModel(object):
         return self._cost
 
     @property
+    def total_loss(self):
+        return self._total_loss
+
+    @property
     def final_state(self):
         return self._final_state
 
@@ -525,6 +529,8 @@ def main(model_select="small",
                 m = PTBModel(is_training=True, config=config, input_=train_input)
             tf.summary.scalar("Training_Loss", m.cost)
             tf.summary.scalar("Learning_Rate", m.lr)
+            tf.summary.scalar("KL Loss", m.kl_loss)
+            tf.summary.scalar("Total Loss", m.total_loss)
 
         with tf.name_scope("Valid"):
             valid_input = PTBInput(config=config, data=valid_data, name="ValidInput")
