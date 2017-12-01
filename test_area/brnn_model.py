@@ -11,6 +11,7 @@ import reader
 import subprocess
 from tensorflow.contrib.rnn import BasicLSTMCell, LSTMStateTuple, MultiRNNCell
 from tensorflow.contrib.distributions import Normal
+from tensorflow.python.client import device_lib
 
 
 """
@@ -23,30 +24,11 @@ global_prior_pi = 0.25
 global_log_sigma1 = -1.0
 global_log_sigma2 = -7.0
 global_random_seed = 12
+global_num_gpus = 0
 
 
 def data_type():
     return tf.float32
-
-
-def get_config():
-    """Get model config."""
-    if model_type == "small":
-        config = SmallConfig()
-    elif model_type == "medium":
-        config = MediumConfig()
-    elif model_type == "large":
-        config = LargeConfig()
-    elif model_type == "test":
-        config = TestConfig()
-    else:
-        raise ValueError("Invalid model: %s", model_type)
-
-    config.prior_pi = global_prior_pi
-    config.log_sigma1 = global_log_sigma1
-    config.log_sigma2 = global_log_sigma2
-
-    return config
 
 
 def sample_posterior(shape, name, prior, is_training):
@@ -155,7 +137,7 @@ class BayesianLSTMCell(BasicLSTMCell):
         self.w = None
         self.b = None
         self.prior = prior
-        self.name = name
+        self.n = name
         self.is_training = is_training
         self.num_units = num_units
         
@@ -166,12 +148,12 @@ class BayesianLSTMCell(BasicLSTMCell):
             size = inputs.get_shape()[-1].value
             
             self.w = sample_posterior((size + self.num_units, 4 * self.num_units),
-                                          name=self.name + "_weights",
+                                          name=self.n + "_weights",
                                           prior=self.prior,
                                           is_training=self.is_training)
 
             self.b = sample_posterior((4 * self.num_units, 1),
-                                           name=self.name + "_biases",
+                                           name=self.n + "_biases",
                                            prior=self.prior,
                                            is_training=self.is_training)
 
@@ -314,7 +296,7 @@ class PTBModel(object):
             self._lr_update = tf.get_collection_ref("lr_update")[0]
         self._cost = tf.get_collection_ref(util.with_prefix(self._name, "cost"))[0]
         self._kl_loss = tf.get_collection_ref(util.with_prefix(self._name, "kl_div"))[0]
-        num_replicas = 1
+        num_replicas = global_num_gpus if self._name == "Train" else 1
         self._initial_state = util.import_state_tuples(
             self._initial_state, self._initial_state_name, num_replicas)
         self._final_state = util.import_state_tuples(
@@ -455,13 +437,33 @@ def run_epoch(session, model, eval_op=None, verbose=False):
         if verbose and (step % (model.input.epoch_size // 10) == 10 or step == 0):
             print("%.3f perplexity: %.3f speed: %.0f wps" %
                   (step * 1.0 / model.input.epoch_size, np.exp(costs / iters),
-                   iters * model.input.batch_size / (time.time() - start_time)))
+                   iters * model.input.batch_size * global_num_gpus /
+                       (time.time() - start_time)))
 
             if model._is_training:
                 print("KL is {}".format(vals["kl_divergence"]))
 
     return np.exp(costs / iters)
 
+
+def get_config():
+    """Get model config."""
+    if model_type == "small":
+        config = SmallConfig()
+    elif model_type == "medium":
+        config = MediumConfig()
+    elif model_type == "large":
+        config = LargeConfig()
+    elif model_type == "test":
+        config = TestConfig()
+    else:
+        raise ValueError("Invalid model: %s", model_type)
+
+    config.prior_pi = global_prior_pi
+    config.log_sigma1 = global_log_sigma1
+    config.log_sigma2 = global_log_sigma2
+
+    return config
 
 #def change_random_seed(seed):
 #    global prng
@@ -482,6 +484,7 @@ def main(model_select="small",
     global global_prior_pi
     global global_log_sigma1
     global global_log_sigma2
+    global global_num_gpus
 #    global global_random_seed
     
     model_type = model_select
@@ -491,6 +494,15 @@ def main(model_select="small",
     global_log_sigma1 = prior_log_sigma1
     global_log_sigma2 = prior_log_sigma2
 #    global_random_seed = set_random_seed
+
+    gpus = [x.name for x in device_lib.list_local_devices() if x.device_type == "GPU"]
+
+    print(len(gpus))
+
+    if len(gpus) == 0:
+        global_num_gpus = 1
+    else:
+        global_num_gpus = len(gpus)
 
 #    change_random_seed(global_random_seed)
     raw_data = reader.ptb_raw_data(data_path)
@@ -532,6 +544,9 @@ def main(model_select="small",
             model.export_ops(name)
         metagraph = tf.train.export_meta_graph()
         soft_placement = False
+        if global_num_gpus > 1:
+            soft_placement = True
+            util.auto_parallel(metagraph, m)
 
     with tf.Graph().as_default():
         tf.train.import_meta_graph(metagraph)
