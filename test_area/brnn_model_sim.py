@@ -157,7 +157,7 @@ class BayesianLSTMCell(BasicLSTMCell):
         self.w = None
         self.b = None
         self.prior = prior
-        self.name = name
+        self.n = name
         self.is_training = is_training
         self.num_units = num_units
         
@@ -168,29 +168,36 @@ class BayesianLSTMCell(BasicLSTMCell):
             size = inputs.get_shape()[-1].value
             
             self.w = sample_posterior((size + self.num_units, 4 * self.num_units),
-                                          name=self.name + "_weights",
+                                          name=self.n + "_weights",
                                           prior=self.prior,
                                           is_training=self.is_training)
 
             self.b = sample_posterior((4 * self.num_units, 1),
-                                           name=self.name + "_biases",
+                                           name=self.n + "_biases",
                                            prior=self.prior,
                                            is_training=self.is_training)
 
         cell, hidden = state
-        
-        concat_inputs_hidden = tf.concat([inputs, hidden],1)
+        print("Cell shape: ", cell.get_shape())   
+        print("Hidden shape: ", hidden.get_shape())       
 
+
+        concat_inputs_hidden = tf.concat([inputs, hidden],1)
+        print("Concat_inputs_hidden: ", concat_inputs_hidden.get_shape())
+        
         concat_inputs_hidden = tf.nn.bias_add(tf.matmul(concat_inputs_hidden, self.w), tf.squeeze(self.b))
+        print("Concat_inputs_hidden (adding bias): ", concat_inputs_hidden.get_shape())
         
         i, j, f, o = tf.split(value=concat_inputs_hidden, num_or_size_splits=4, axis=1)
 
         new_cell = (cell * tf.sigmoid(f + self._forget_bias) + tf.sigmoid(i) * self._activation(j))
+        print("New Cell: ", new_cell.get_shape())
         
         new_hidden = self._activation(new_cell) * tf.sigmoid(o)
+        print("New Hidden: ", new_hidden.get_shape())
 
         new_state = LSTMStateTuple(new_cell, new_hidden)
-
+        
         return new_hidden, new_state
 
 
@@ -238,6 +245,7 @@ def sim_producer(x, y, batch_size, num_steps, name=None):
   with tf.name_scope(name, "SIMProducer", [x, batch_size, num_steps]):
     x_data = tf.convert_to_tensor(x, name="x_data", dtype=tf.float32)
     y_data = tf.convert_to_tensor(y, name="y_data", dtype=tf.int32)
+    print("Finished tf.convert_to_tensor")
     
     data_len = tf.size(x_data)
     batch_len = data_len // batch_size
@@ -326,7 +334,13 @@ class PTBModel(object):
             embedding = sample_posterior([vocab_size, size], "embedding", prior, is_training)
             inputs = tf.nn.embedding_lookup(embedding, input_.input_data)
         """
+        # Making Simulated data match dims of PTB data
+        # Dims: [batch size, numsteps, hidden size]
         inputs = input_.input_data
+        inputs = tf.expand_dims(tf.ones([self.batch_size, self.num_steps]), 0)*inputs
+        inputs = tf.tile(inputs, [size,1,1])
+        inputs = tf.transpose(inputs, perm=[1, 2, 0])
+        print("Input data Shape: ", inputs.get_shape())
         
         # Build the BBB LSTM cells
         cells = []
@@ -334,11 +348,14 @@ class PTBModel(object):
             cells.append(BayesianLSTMCell(size, prior, is_training,
                                       forget_bias=0.0,
                                       name="bbb_lstm_{}".format(i)))
-
+            
+        print(1)    
         cell = MultiRNNCell(cells, state_is_tuple=True)
+        print(2)
         self._initial_state = cell.zero_state(config.batch_size, data_type())
         state = self._initial_state
-        
+        print(3)
+
         # Forward pass for the truncated mini-batch
         outputs = []
         with tf.variable_scope("RNN"):
@@ -347,14 +364,18 @@ class PTBModel(object):
                 (cell_output, state) = cell(inputs[:, time_step, :], state)
                 outputs.append(cell_output)
         output = tf.reshape(tf.concat(outputs, 1), [-1, config.hidden_size])
+        print("Output: ", output.get_shape())
 
         # Softmax weights
         softmax_w = sample_posterior((size, vocab_size), "softmax_w", prior, is_training)
         softmax_b = sample_posterior((vocab_size, 1), "softmax_b", prior, is_training)
-        
+        print("Softmax_w: ", softmax_w.get_shape())
+        print("Softmax_b: ", softmax_b.get_shape())
+
         logits = tf.nn.xw_plus_b(output, softmax_w, tf.squeeze(softmax_b))
         logits = tf.reshape(logits, [self.batch_size, self.num_steps, vocab_size])
-        
+        print("Logits: ", logits.get_shape())
+
         loss = tf.contrib.seq2seq.sequence_loss(
             logits,
             input_.targets,
