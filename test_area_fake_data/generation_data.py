@@ -321,16 +321,19 @@ for i in range(Nchains):
                           phi2 = 2*np.pi/7, m = 0.1 )
 
     # Generate the noise
-    K = get_Kernel(tgrid, kernel_type = "1", l = 0.01, sigma_noise = 0.2)
+    K = get_Kernel(tgrid, kernel_type = "1",l = 0.0000001, sigma_noise = 0.01)
     L = np.linalg.cholesky(K+1e-10*np.eye(N))
     f_prime = np.random.randn(N,1)
     error = L.dot(f_prime)
     
     X_noisy = X + error
+    
+    # Generate labels
     Y_noisy = (np.sign(np.diff(X_noisy,n=1,axis = 0))+ 1)/2
+    Y = (np.sign(np.diff(X,n=1,axis = 0))+ 1)/2
 
     X_list.append(X_noisy[:-1,[0]])
-    Y_list.append(Y_noisy[:,[0]])
+    Y_list.append(Y[:,[0]])
 
 
 ########## Using Pickle ###############
