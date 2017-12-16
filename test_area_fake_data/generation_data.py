@@ -321,7 +321,7 @@ for i in range(Nchains):
                           phi2 = 2*np.pi/7, m = 0.1 )
 
     # Generate the noise
-    K = get_Kernel(tgrid, kernel_type = "1",l = 0.0000001, sigma_noise = 0.01)
+    K = get_Kernel(tgrid, kernel_type = "1",l = 0.0000001, sigma_noise = 0.001)
     L = np.linalg.cholesky(K+1e-10*np.eye(N))
     f_prime = np.random.randn(N,1)
     error = L.dot(f_prime)

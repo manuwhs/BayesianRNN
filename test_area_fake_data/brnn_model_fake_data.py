@@ -161,6 +161,8 @@ class BayesianLSTMCell(BasicLSTMCell):
                                                prior=self.prior,
                                                is_training=self.is_training)
 
+            # self.w = None; # Should we set it to be None Again so that it is sampled when calling again ?
+            
             C_t_prev , h_t_prev = state
 
             concat_inputs_hidden = tf.concat([inputs_i, h_t_prev], 1)
