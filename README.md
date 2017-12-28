@@ -9,14 +9,14 @@ This repository was created by the group DeepTrading for the Deep Learning cours
 
 ### LINKS ###
 
-Bayesian Recurrent Neural Networks paper
+*Bayesian Recurrent Neural Networks paper
 https://arxiv.org/pdf/1704.02798.pdf
 
-Link with Zaremba's RNN Implementation:
+*Link with Zaremba's RNN Implementation:
 https://www.tensorflow.org/tutorials/recurrent
 
-BRNN Implementation with Reparametarization Trick 
+*BRNN Implementation with Reparametarization Trick 
 https://gist.github.com/windweller/500ddc19d0c3cf1eb03cf73cc6b88fe3
 
-Another attempt at an implementation of Bayesian RNNs
+*Another attempt at an implementation of Bayesian RNNs
 https://github.com/DeNeutoy/bayesian-rnn/blob/master/bayesian_rnn.py
