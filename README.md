@@ -1,32 +1,11 @@
 # README #
 
-This README would normally document whatever steps are necessary to get your application up and running.
+This repository was created by the group DeepTrading for the Deep Learning course project Fall 2017.
 
 ### What is this repository for? ###
 
-* REPOSITORY for Deep Learning Course Project at DTU Fall 2017 by Peter, Manu and Ramiro. 
-* Version
-* [Learn Markdown](https://bitbucket.org/tutorials/markdowndemo)
+* This repository contains the source code for the groups attempt at reproducing the results found in the paper "Bayesian Recurrent Neural Networks" by Fortunato et al. (arXiv:1704.02798)
 
-### How do I get set up? ###
-
-* Summary of set up
-* Configuration
-* Dependencies
-* Database configuration
-* How to run tests
-* Deployment instructions
-
-### Contribution guidelines ###
-
-* Writing tests
-* Code review
-* Other guidelines
-
-### Who do I talk to? ###
-
-* Repo owner or admin
-* Other community or team contact
 
 ### LINKS ###
 
