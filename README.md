@@ -6,6 +6,10 @@ This repository was created by the group DeepTrading for the Deep Learning cours
 
 * This repository contains the source code for the groups attempt at reproducing the results found in the paper "Bayesian Recurrent Neural Networks" by Fortunato et al. (see link below)
 
+* For a notebook running the Bayesian RNN on the PTB dataset, see folder "BRNN"
+
+* For a notebook running the Bayesian RNN on simulated data, see folder "XXXX"
+
 
 ### LINKS ###
 
