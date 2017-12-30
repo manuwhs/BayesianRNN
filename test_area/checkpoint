@@ -1,3 +1,0 @@
-model_checkpoint_path: "saved_model-2323"
-all_model_checkpoint_paths: "saved_model/model.ckpt-0"
-all_model_checkpoint_paths: "saved_model-2323"
