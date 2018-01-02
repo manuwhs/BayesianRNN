@@ -63,6 +63,7 @@ def sample_posterior(shape, name, prior, is_training):
     tf.summary.histogram(name + '_sigma_hist', sigma)
 
     sample = output
+    
     kl = get_kl_divergence(shape, tf.reshape(mu, [-1]), tf.reshape(sigma, [-1]), prior, sample)
     tf.add_to_collection('KL_layers', kl)
 
@@ -91,7 +92,6 @@ def get_kl_divergence(shape, mu, sigma, prior, sample):
     #So essentially get: q( theta | mu, sigma )
     posterior = Normal(mu, sigma)
     
-    
     prior_1 = Normal(0.0, prior.sigma1)
     prior_2 = Normal(0.0, prior.sigma2)
     
@@ -102,7 +102,7 @@ def get_kl_divergence(shape, mu, sigma, prior, sample):
     mix1 = tf.reduce_sum(prior_1.log_prob(sample)) + tf.log(prior.pi_mix)
     mix2 = tf.reduce_sum(prior_2.log_prob(sample)) + tf.log(1.0 - prior.pi_mix)
     
-    #Compute KL distance
+    #Compute KL divergence
     KL = q_theta - tf.reduce_logsumexp([mix1,mix2])
     
     return KL
@@ -162,6 +162,7 @@ class BayesianLSTMCell(BasicLSTMCell):
 
         concat_inputs_hidden = tf.nn.bias_add(tf.matmul(concat_inputs_hidden, self.w), tf.squeeze(self.b))
         
+        #Gates: Input, New, Forget and Output
         i, j, f, o = tf.split(value=concat_inputs_hidden, num_or_size_splits=4, axis=1)
 
         new_cell = (cell * tf.sigmoid(f + self._forget_bias) + tf.sigmoid(i) * self._activation(j))
@@ -472,11 +473,6 @@ def get_config():
 
     return config
 
-#def change_random_seed(seed):
-#    global prng
-#    prng = np.random.RandomState(seed)
-#    tf.set_random_seed(seed)
-
 
 def main(model_select="small",
          dat_path = "../data",
@@ -492,7 +488,6 @@ def main(model_select="small",
     global global_log_sigma1
     global global_log_sigma2
     global global_num_gpus
-#    global global_random_seed
     
     model_type = model_select
     data_path = dat_path
@@ -500,7 +495,6 @@ def main(model_select="small",
     global_prior_pi = mixing_pi
     global_log_sigma1 = prior_log_sigma1
     global_log_sigma2 = prior_log_sigma2
-#    global_random_seed = set_random_seed
 
     gpus = [x.name for x in device_lib.list_local_devices() if x.device_type == "GPU"]
 
@@ -509,7 +503,6 @@ def main(model_select="small",
     else:
         global_num_gpus = len(gpus)
 
-#    change_random_seed(global_random_seed)
     raw_data = reader.ptb_raw_data(data_path)
     train_data, valid_data, test_data, _, _ = raw_data
 
