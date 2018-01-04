@@ -23,4 +23,4 @@ https://www.tensorflow.org/tutorials/recurrent
 https://gist.github.com/windweller/500ddc19d0c3cf1eb03cf73cc6b88fe3
 
 * Another attempt at an implementation of Bayesian RNNs
-https://github.com/DeNeutoy/bayesian-rnn/blob/master/bayesian_rnn.py
+https://github.com/mirceamironenco/BayesianRecurrentNN
